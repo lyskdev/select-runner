@@ -79,9 +79,17 @@ runs:
           echo "::warning::Repo-level runner API request failed"
         fi
 
+        emit() {
+          local runner="$1"
+          local msg="$2"
+          echo "::notice::${msg}"
+          printf "| | |\n|---|---|\n| **Selected runner** | \`%s\` |\n| **Reason** | %s |\n" \
+            "${runner}" "${msg}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "runner=${runner}" >> "${GITHUB_OUTPUT}"
+        }
+
         if [ "${online}" -gt 0 ]; then
-          echo "Preferred label '${LABEL}' online (${online} repo runner(s)) — using ${LABEL}"
-          echo "runner=${LABEL}" >> "${GITHUB_OUTPUT}"
+          emit "${LABEL}" "Preferred label '${LABEL}' online (${online} repo runner(s))"
           exit 0
         fi
 
@@ -97,12 +105,10 @@ runs:
           fi
 
           if [ "${online}" -gt 0 ]; then
-            echo "Preferred label '${LABEL}' online (${online} org runner(s)) — using ${LABEL}"
-            echo "runner=${LABEL}" >> "${GITHUB_OUTPUT}"
+            emit "${LABEL}" "Preferred label '${LABEL}' online (${online} org runner(s))"
             exit 0
           fi
         fi
 
         # --- 3. Fallback ---
-        echo "No online runners with preferred label '${LABEL}' — using ${FALLBACK}"
-        echo "runner=${FALLBACK}" >> "${GITHUB_OUTPUT}"
+        emit "${FALLBACK}" "No online runners with label '${LABEL}' — falling back to ${FALLBACK}"
