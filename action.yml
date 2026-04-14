@@ -1,0 +1,66 @@
+name: Select Runner
+description: >
+  Prefer self-hosted GitHub Actions runners when at least one is online;
+  fall back to a GitHub-hosted runner otherwise.
+
+inputs:
+  self-hosted-label:
+    description: Label to match against online self-hosted runners
+    required: false
+    default: self-hosted
+  fallback:
+    description: Runner label to use when no self-hosted runners are online
+    required: false
+    default: ubuntu-latest
+  token:
+    description: >
+      GitHub token used to query the Actions API (needs actions:read permission)
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  runner:
+    description: Resolved runner label to pass to runs-on
+    value: ${{ steps.pick.outputs.runner }}
+
+runs:
+  using: composite
+  steps:
+    - name: Pick runner
+      id: pick
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LABEL: ${{ inputs.self-hosted-label }}
+        FALLBACK: ${{ inputs.fallback }}
+      run: |
+        set -euo pipefail
+
+        api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100"
+
+        if ! json=$(curl -fsS \
+             -H "Authorization: Bearer ${GH_TOKEN}" \
+             -H "Accept: application/vnd.github+json" \
+             -H "X-GitHub-Api-Version: 2022-11-28" \
+             "${api}"); then
+          echo "::warning::Runner API request failed — using fallback: ${FALLBACK}"
+          echo "runner=${FALLBACK}" >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        # Count runners that are online AND carry the requested label
+        online=$(echo "${json}" | jq -r \
+          --arg label "${LABEL}" \
+          '[.runners[] | select(.status == "online") | select(.labels[].name == $label)] | length' \
+          2>/dev/null || echo 0)
+
+        # Guard against empty / non-numeric values
+        case "${online}" in ''|*[!0-9]*) online=0 ;; esac
+
+        if [ "${online}" -gt 0 ]; then
+          echo "Self-hosted runner(s) with label '${LABEL}' online (${online}) — using ${LABEL}"
+          echo "runner=${LABEL}" >> "${GITHUB_OUTPUT}"
+        else
+          echo "No online self-hosted runners with label '${LABEL}' — using ${FALLBACK}"
+          echo "runner=${FALLBACK}" >> "${GITHUB_OUTPUT}"
+        fi
