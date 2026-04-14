@@ -2,6 +2,7 @@ name: Select Runner
 description: >
   Prefer a runner label you choose when at least one matching runner is online;
   fall back to another label otherwise (common case: self-hosted with a GitHub-hosted fallback).
+  Supports both repo-level and org-level runners.
 
 inputs:
   preferred-runner-label:
@@ -14,9 +15,18 @@ inputs:
     default: ubuntu-latest
   token:
     description: >
-      GitHub token used to query the Actions API (needs actions:read permission)
+      GitHub token used to query the repo-level Actions API (needs actions:read permission).
+      This is used to check for repo-level runners. Defaults to the automatic workflow token.
     required: false
     default: ${{ github.token }}
+  runner-token:
+    description: >
+      GitHub token with org-level runner read access. When provided, the action also checks
+      org-level runners if no repo-level runners match. Create a fine-grained PAT with
+      "Organization self hosted runners: Read" permission, or a classic PAT with admin:org scope.
+      Not required when runners are registered at the repo level.
+    required: false
+    default: ""
 
 outputs:
   runner:
@@ -31,36 +41,68 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
+        RUNNER_TOKEN: ${{ inputs['runner-token'] }}
         LABEL: ${{ inputs['preferred-runner-label'] }}
         FALLBACK: ${{ inputs.fallback }}
       run: |
         set -euo pipefail
 
-        api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100"
+        count_online_runners() {
+          local json="$1"
+          local count
+          count=$(echo "${json}" | jq -r \
+            --arg label "${LABEL}" \
+            '[.runners[] | select(.status == "online") | select(.labels[].name == $label)] | length' \
+            2>/dev/null || echo 0)
+          # Guard against empty / non-numeric values
+          case "${count}" in ''|*[!0-9]*) count=0 ;; esac
+          echo "${count}"
+        }
 
-        if ! json=$(curl -fsS \
-             -H "Authorization: Bearer ${GH_TOKEN}" \
-             -H "Accept: application/vnd.github+json" \
-             -H "X-GitHub-Api-Version: 2022-11-28" \
-             "${api}"); then
-          echo "::warning::Runner API request failed — using fallback: ${FALLBACK}"
-          echo "runner=${FALLBACK}" >> "${GITHUB_OUTPUT}"
+        fetch_runners() {
+          local url="$1"
+          local token="$2"
+          curl -fsS \
+            -H "Authorization: Bearer ${token}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${url}" 2>/dev/null
+        }
+
+        # --- 1. Check repo-level runners ---
+        repo_api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100"
+
+        online=0
+        if json=$(fetch_runners "${repo_api}" "${GH_TOKEN}"); then
+          online=$(count_online_runners "${json}")
+        else
+          echo "::warning::Repo-level runner API request failed"
+        fi
+
+        if [ "${online}" -gt 0 ]; then
+          echo "Preferred label '${LABEL}' online (${online} repo runner(s)) — using ${LABEL}"
+          echo "runner=${LABEL}" >> "${GITHUB_OUTPUT}"
           exit 0
         fi
 
-        # Count runners that are online AND carry the requested label
-        online=$(echo "${json}" | jq -r \
-          --arg label "${LABEL}" \
-          '[.runners[] | select(.status == "online") | select(.labels[].name == $label)] | length' \
-          2>/dev/null || echo 0)
+        # --- 2. Check org-level runners (if runner-token is provided) ---
+        if [ -n "${RUNNER_TOKEN}" ]; then
+          org="${GITHUB_REPOSITORY%%/*}"
+          org_api="${GITHUB_API_URL}/orgs/${org}/actions/runners?per_page=100"
 
-        # Guard against empty / non-numeric values
-        case "${online}" in ''|*[!0-9]*) online=0 ;; esac
+          if json=$(fetch_runners "${org_api}" "${RUNNER_TOKEN}"); then
+            online=$(count_online_runners "${json}")
+          else
+            echo "::warning::Org-level runner API request failed — check that runner-token has org runner read permission"
+          fi
 
-        if [ "${online}" -gt 0 ]; then
-          echo "Preferred label '${LABEL}' online (${online} runner(s)) — using ${LABEL}"
-          echo "runner=${LABEL}" >> "${GITHUB_OUTPUT}"
-        else
-          echo "No online runners with preferred label '${LABEL}' — using ${FALLBACK}"
-          echo "runner=${FALLBACK}" >> "${GITHUB_OUTPUT}"
+          if [ "${online}" -gt 0 ]; then
+            echo "Preferred label '${LABEL}' online (${online} org runner(s)) — using ${LABEL}"
+            echo "runner=${LABEL}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
         fi
+
+        # --- 3. Fallback ---
+        echo "No online runners with preferred label '${LABEL}' — using ${FALLBACK}"
+        echo "runner=${FALLBACK}" >> "${GITHUB_OUTPUT}"
