@@ -1,15 +1,15 @@
 name: Select Runner
 description: >
-  Prefer self-hosted GitHub Actions runners when at least one is online;
-  fall back to a GitHub-hosted runner otherwise.
+  Prefer a runner label you choose when at least one matching runner is online;
+  fall back to another label otherwise (common case: self-hosted with a GitHub-hosted fallback).
 
 inputs:
-  self-hosted-label:
-    description: Label to match against online self-hosted runners
+  preferred-runner-label:
+    description: Label of the preferred runner (used when at least one online runner has this label)
     required: false
     default: self-hosted
   fallback:
-    description: Runner label to use when no self-hosted runners are online
+    description: Runner label to use when no online runners match the preferred runner label
     required: false
     default: ubuntu-latest
   token:
@@ -31,7 +31,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
-        LABEL: ${{ inputs.self-hosted-label }}
+        LABEL: ${{ inputs['preferred-runner-label'] }}
         FALLBACK: ${{ inputs.fallback }}
       run: |
         set -euo pipefail
@@ -58,9 +58,9 @@ runs:
         case "${online}" in ''|*[!0-9]*) online=0 ;; esac
 
         if [ "${online}" -gt 0 ]; then
-          echo "Self-hosted runner(s) with label '${LABEL}' online (${online}) — using ${LABEL}"
+          echo "Preferred label '${LABEL}' online (${online} runner(s)) — using ${LABEL}"
           echo "runner=${LABEL}" >> "${GITHUB_OUTPUT}"
         else
-          echo "No online self-hosted runners with label '${LABEL}' — using ${FALLBACK}"
+          echo "No online runners with preferred label '${LABEL}' — using ${FALLBACK}"
           echo "runner=${FALLBACK}" >> "${GITHUB_OUTPUT}"
         fi
