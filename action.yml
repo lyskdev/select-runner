@@ -47,19 +47,22 @@ runs:
       run: |
         set -euo pipefail
 
+        # Count runners that are online and carry the target label.
+        # Uses any() so a runner with multiple matching labels isn't double-counted.
         count_online_runners() {
           local json="$1"
           local count
           count=$(echo "${json}" | jq -r \
             --arg label "${LABEL}" \
-            '[.runners[] | select(.status == "online") | select(.labels[].name == $label)] | length' \
+            '[.runners[] | select(.status == "online" and (.labels | any(.name == $label)))] | length' \
             2>/dev/null || echo 0)
           # Guard against empty / non-numeric values
           case "${count}" in ''|*[!0-9]*) count=0 ;; esac
           echo "${count}"
         }
 
-        fetch_runners() {
+        # Fetch a single page; caller aggregates across pages.
+        fetch_page() {
           local url="$1"
           local token="$2"
           curl -fsS \
@@ -67,6 +70,29 @@ runs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "${url}" 2>/dev/null
+        }
+
+        # Paginate through all runners (handles installations with >100 runners).
+        fetch_runners() {
+          local base_url="$1"
+          local token="$2"
+          local page=1
+          local merged='{"runners":[]}'
+          local page_json page_count
+
+          while true; do
+            if ! page_json=$(fetch_page "${base_url}&page=${page}" "${token}"); then
+              return 1
+            fi
+            page_count=$(echo "${page_json}" | jq '.runners | length' 2>/dev/null || echo 0)
+            merged=$(printf '%s\n%s' "${merged}" "${page_json}" \
+              | jq -s '{"runners": ([.[].runners] | add // [])}')
+            # GitHub returns at most 100 per page; fewer means we're on the last page.
+            [ "${page_count}" -lt 100 ] && break
+            page=$((page + 1))
+          done
+
+          echo "${merged}"
         }
 
         # --- 1. Check repo-level runners ---
